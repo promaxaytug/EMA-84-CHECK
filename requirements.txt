@@ -1,0 +1,7 @@
+streamlit
+pandas
+ccxt[async]
+python-dotenv
+python-telegram-bot
+pytz
+numpy
