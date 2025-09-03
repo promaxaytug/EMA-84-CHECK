@@ -15,9 +15,15 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 st.set_page_config(page_title="EMA Trend Tarayıcı", layout="wide")
 st.title("🐞 EMA Trend Tarayıcı (Teşhis Modu)")
 
+# GÜNCELLEME: Exchange nesnesi artık global olarak tanımlanıyor.
+exchange = ccxt.binance({'options': {'defaultType': 'future'}})
+
 # --- 2. YARDIMCI FONKSİYONLAR ---
-@st.cache_data(ttl=300) # Önbelleği 5 dakikaya düşürdük
-def get_ohlcv(exchange, symbol, timeframe, limit=500):
+
+# GÜNCELLEME: Fonksiyon artık 'exchange' parametresi almıyor, global olanı kullanıyor.
+@st.cache_data(ttl=300) 
+def get_ohlcv(symbol, timeframe, limit=500):
+    """Fonksiyon artık global exchange nesnesini kullanıyor."""
     try:
         return exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
     except Exception as e:
@@ -43,20 +49,18 @@ with st.sidebar:
     ema_period = st.number_input("EMA Değeri", min_value=1, value=84)
     scan_button = st.button("🚀 Tara", use_container_width=True)
     st.markdown("---")
-    debug_mode = st.checkbox("🐞 Hata Ayıklama Modunu Aktif Et", value=True) # Varsayılan olarak işaretli
+    debug_mode = st.checkbox("🐞 Hata Ayıklama Modunu Aktif Et", value=True)
 
 # --- ANA İŞ AKIŞI ---
 if scan_button:
-    exchange = ccxt.binance({'options': {'defaultType': 'future'}})
-
     if debug_mode:
         st.subheader("🐞 Hata Ayıklama Raporu: BTC/USDT")
         st.info("Bu rapor, bulut sunucusunun filtreleme için kullandığı kesin değerleri göstermektedir.")
 
-        # Adım 1: Veri Çekme
         with st.spinner("BTC/USDT için 1S ve 4S verileri çekiliyor..."):
-            data_1h = get_ohlcv(exchange, 'BTC/USDT', '1h')
-            data_4h = get_ohlcv(exchange, 'BTC/USDT', '4h')
+            # GÜNCELLEME: Fonksiyona artık 'exchange' parametresi gönderilmiyor.
+            data_1h = get_ohlcv('BTC/USDT', '1h')
+            data_4h = get_ohlcv('BTC/USDT', '4h')
         
         st.markdown("---")
         st.write(f"**Veri Çekme Sonuçları:**")
@@ -64,11 +68,9 @@ if scan_button:
         st.write(f"4S için alınan mum sayısı: `{len(data_4h)}`")
 
         if not data_1h or not data_4h or len(data_1h) < ema_period or len(data_4h) < ema_period:
-            st.error("Veri Yetersiz! Sunucu, BTC/USDT için bile yeterli sayıda mum verisi alamıyor. Sorun veri çekme adımında.")
+            st.error("Veri Yetersiz! Sunucu, BTC/USDT için bile yeterli sayıda mum verisi alamıyor.")
         else:
             st.success("Veri çekme başarılı, yeterli sayıda mum mevcut.")
-            
-            # Adım 2: Hesaplamalar
             st.markdown("---")
             st.write("**Hesaplama Sonuçları:**")
             
@@ -88,7 +90,6 @@ if scan_button:
                 st.metric(label="4S Anlık Fiyat", value=f"{price_4h:,.2f}")
                 st.metric(label=f"4S {ema_period} EMA", value=f"{ema_4h:,.2f}")
 
-            # Adım 3: Filtreleme Mantığı
             st.markdown("---")
             st.write("**Filtreleme Kontrolü:**")
             st.write(f"Seçilen Yön: **{direction}**")
@@ -96,11 +97,10 @@ if scan_button:
             check_1h = price_1h > ema_1h if direction == 'Long' else price_1h < ema_1h
             check_4h = price_4h > ema_4h if direction == 'Long' else price_4h < ema_4h
             
-            st.write(f"1S Koşulu Sağlandı mı? (`Fiyat > EMA`): **{check_1h}**")
-            st.write(f"4S Koşulu Sağlandı mı? (`Fiyat > EMA`): **{check_4h}**")
+            st.write(f"1S Koşulu Sağlandı mı? (`Fiyat {' >' if direction == 'Long' else ' <'} EMA`): **{check_1h}**")
+            st.write(f"4S Koşulu Sağlandı mı? (`Fiyat {' >' if direction == 'Long' else ' <'} EMA`): **{check_4h}**")
 
             final_verdict = "✅ GEÇTİ" if (check_1h and check_4h) else "❌ GEÇEMEDİ"
             st.subheader(f"Genel Sonuç: {final_verdict}")
     else:
-        # Normal tarama modu (şimdilik bu kısmı kullanmıyoruz, debug'a odaklanıyoruz)
-        st.warning("Lütfen hata ayıklama modunu aktif bırakarak test ediniz.")
+        st.warning("Normal tarama modu bu test versiyonunda devre dışıdır. Lütfen Hata Ayıklama Modu ile devam edin.")
