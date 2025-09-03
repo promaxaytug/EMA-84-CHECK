@@ -40,11 +40,14 @@ def calculate_adx(high, low, close, period=14):
 async def get_data_for_coin(exchange, symbol, ema_period, direction, apply_pre_filter):
     try:
         timeframes = ['15m', '1h', '4h', '1d']
-        limit = ema_period * 3
+        # HATA DÜZELTMESİ: Veri çekme limitini artırarak "Veri Yetersiz" hatasını çözüyoruz.
+        limit = 500 
         tasks = [exchange.fetch_ohlcv(symbol, tf, limit=limit) for tf in timeframes]
         ohlcv_data = await asyncio.gather(*tasks, return_exceptions=True)
+        
         for i, result in enumerate(ohlcv_data):
-            if isinstance(result, Exception) or not result or len(result) < ema_period:
+            # Gerekli EMA periyodundan daha az veri gelirse hata ver
+            if isinstance(result, Exception) or not result or len(result) < (ema_period * 2):
                 return {"Coin": symbol, "Trend Score": 0, "Hata": "Veri Yetersiz"}
         
         data_15m, data_1h, data_4h, data_1d = ohlcv_data
@@ -61,7 +64,6 @@ async def get_data_for_coin(exchange, symbol, ema_period, direction, apply_pre_f
         price_4h = df_4h['close'].iloc[-1]
         price_1d = df_1d['close'].iloc[-1]
 
-        # DEBUG MODU: Değerleri teşhis için bir sözlükte topla
         debug_data = {
             "price_1h": price_1h, "ema_1h": ema_1h,
             "1h_kontrol_sonucu": "🟢" if price_1h > ema_1h else "🔴",
@@ -150,7 +152,6 @@ async def send_telegram_report(html_content):
     finally:
         if os.path.exists("scan_results.html"): os.remove("scan_results.html")
 
-# --- ARAYÜZ (STREAMLIT UI) ---
 with st.sidebar:
     st.header("⚙️ Tarama Ayarları")
     analysis_mode = st.radio("Analiz Modu", ('Liste Tara', 'Tek Coin Analiz Et'), horizontal=True)
@@ -169,8 +170,6 @@ with st.sidebar:
     st.markdown("---")
     debug_mode = st.checkbox("🐞 Hata Ayıklama Modunu Aktif Et")
 
-
-# --- ANA İŞ AKIŞI ---
 if scan_button:
     apply_pre_filter = True
     if analysis_mode == 'Tek Coin Analiz Et':
@@ -179,7 +178,6 @@ if scan_button:
         apply_pre_filter = False
     
     target_coins = []
-    # DEBUG MODU: Aktifse, hedef listeyi ve filtreyi geçersiz kıl
     if debug_mode:
         target_coins = ['BTC/USDT']
         apply_pre_filter = True
@@ -199,14 +197,15 @@ if scan_button:
     else:
         results = asyncio.run(main_scanner(target_coins, ema_period, direction, apply_pre_filter))
         
-        # DEBUG MODU: Aktifse, ham sonucu ve teşhis raporunu ekrana yazdır
         if debug_mode:
             st.subheader("🐞 Hata Ayıklama Raporu")
             st.warning("Bu rapor, filtrenin bulut sunucusunda tam olarak hangi değerleri gördüğünü gösterir.")
-            debug_info = results[0].get("Debug", {})
-            if debug_info:
+            debug_info = results[0].get("Debug")
+            if not debug_info:
+                 st.json(results[0])
+            else:
                 st.table(pd.DataFrame([debug_info]))
-            st.json(results[0]) # Ham verinin tamamını görmek için
+                st.json(results[0])
         else:
             final_results = [r for r in results if r is not None and "Hata" not in r and r.get("Hata") != "Ön Filtreden Geçemedi"]
             if final_results:
@@ -220,7 +219,6 @@ if scan_button:
                 st.success(message)
                 if 'results_df' in st.session_state: del st.session_state['results_df']
 
-# --- SONUÇLARI GÖSTERME VE FİLTRELEME ---
 if not debug_mode and 'results_df' in st.session_state and not st.session_state.results_df.empty:
     st.markdown("---"); st.subheader("🔍 Sonuçları Filtrele")
     col1, col2 = st.columns(2)
