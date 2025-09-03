@@ -1,6 +1,6 @@
 streamlit
 pandas
-ccxt[async]
+ccxt
 python-dotenv
 python-telegram-bot
 pytz
