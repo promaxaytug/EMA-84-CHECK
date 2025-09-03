@@ -18,19 +18,13 @@ st.title("🚀 Hızlandırılmış EMA Trend Tarayıcı (Binance Futures)")
 
 # --- 2. YARDIMCI FONKSİYONLAR ---
 
-# GÜNCELLEME: İkon hesaplama fonksiyonu artık global ve 'Neutral' modu var
 def get_status_icon(price, ema, direction):
-    """Fiyatın EMA'ya göre durumunu belirler. 'Neutral' yönü mutlak durumu gösterir."""
     if ema is None: return "Veri Yetersiz"
     proximity = abs(price - ema) / ema
     if proximity <= 0.005: return "⚪️"
-    
-    if direction == 'Long':
-        return "🟢" if price > ema else "🔴"
-    elif direction == 'Short':
-        return "🟢" if price < ema else "🔴"
-    else: # Neutral (Mutlak Durum)
-        return "🟢" if price > ema else "🔴"
+    if direction == 'Long': return "🟢" if price > ema else "🔴"
+    elif direction == 'Short': return "🟢" if price < ema else "🔴"
+    else: return "🟢" if price > ema else "🔴"
 
 def calculate_adx(high, low, close, period=14):
     plus_dm = high.diff()
@@ -58,25 +52,36 @@ async def get_data_for_coin(exchange, symbol, ema_period, direction, apply_pre_f
         df_1h = pd.DataFrame(data_1h, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df_4h = pd.DataFrame(data_4h, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df_1d = pd.DataFrame(data_1d, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        
         ema_1h = df_1h['close'].ewm(span=ema_period, adjust=False).mean().iloc[-1]
         ema_4h = df_4h['close'].ewm(span=ema_period, adjust=False).mean().iloc[-1]
         ema_1d = df_1d['close'].ewm(span=ema_period, adjust=False).mean().iloc[-1]
+        
         price_1h = df_1h['close'].iloc[-1]
         price_4h = df_4h['close'].iloc[-1]
         price_1d = df_1d['close'].iloc[-1]
+
+        # DEBUG MODU: Değerleri teşhis için bir sözlükte topla
+        debug_data = {
+            "price_1h": price_1h, "ema_1h": ema_1h,
+            "1h_kontrol_sonucu": "🟢" if price_1h > ema_1h else "🔴",
+            "price_4h": price_4h, "ema_4h": ema_4h,
+            "4h_kontrol_sonucu": "🟢" if price_4h > ema_4h else "🔴"
+        }
 
         if apply_pre_filter:
             pre_filter_passed = False
             if direction == 'Long':
                 if price_1h > ema_1h and price_4h > ema_4h: pre_filter_passed = True
-            else: # Short
+            else:
                 if price_1h < ema_1h and price_4h < ema_4h: pre_filter_passed = True
+            
+            debug_data["filter_passed"] = pre_filter_passed
             if not pre_filter_passed:
-                return None
+                return {"Coin": symbol, "Hata": "Ön Filtreden Geçemedi", "Debug": debug_data}
 
-        # GÜNCELLEME: İkonların yönü, filtrenin durumuna göre belirleniyor
         icon_direction = direction if apply_pre_filter else "Neutral"
-
+        
         adx_1d = calculate_adx(df_1d['high'], df_1d['low'], df_1d['close'])
         adx_1h = calculate_adx(df_1h['high'], df_1h['low'], df_1h['close'])
         
@@ -101,7 +106,7 @@ async def get_data_for_coin(exchange, symbol, ema_period, direction, apply_pre_f
         ema_15m_21 = df_15m['close'].ewm(span=21, adjust=False).mean().iloc[-1]
         price_15m = df_15m['close'].iloc[-1]
         
-        return {
+        final_data = {
             "Coin": symbol,
             "15m (21 EMA)": get_status_icon(price_15m, ema_15m_21, icon_direction),
             f"1h ({ema_period} EMA)": get_status_icon(price_1h, ema_1h, icon_direction),
@@ -111,8 +116,10 @@ async def get_data_for_coin(exchange, symbol, ema_period, direction, apply_pre_f
             "1H ADX (14)": f"{adx_1h:.2f}",
             "1D ADX (14)": f"{adx_1d:.2f}",
             "Günlük ATR %": f"{atr_percent:.2f}%",
-            "Fiyatın 1D EMA'dan Uzaklığı %": f"{distance_from_ema:.2f}%"
+            "Fiyatın 1D EMA'dan Uzaklığı %": f"{distance_from_ema:.2f}%",
+            "Debug": debug_data
         }
+        return final_data
     except Exception as e:
         return {"Coin": symbol, "Trend Score": 0, "Hata": str(e)[:50]}
 
@@ -128,10 +135,8 @@ async def main_scanner(target_coins, ema_period, direction, apply_pre_filter):
         progress_bar.progress(progress_percentage, text=f"{i+1}/{len(tasks)} coin analiz edildi...")
     await exchange_async.close()
     progress_bar.empty()
-    final_results = [r for r in results if r is not None and "Hata" not in r]
-    return final_results
+    return results
 
-# ... Diğer yardımcı fonksiyonlar ve UI Arayüzü (değişmedi) ...
 def get_coin_lists(): return [f for f in os.listdir('.') if f.endswith('.txt')]
 async def send_telegram_report(html_content):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID: st.error("Telegram bilgileri .env dosyasında eksik!"); return
@@ -145,6 +150,7 @@ async def send_telegram_report(html_content):
     finally:
         if os.path.exists("scan_results.html"): os.remove("scan_results.html")
 
+# --- ARAYÜZ (STREAMLIT UI) ---
 with st.sidebar:
     st.header("⚙️ Tarama Ayarları")
     analysis_mode = st.radio("Analiz Modu", ('Liste Tara', 'Tek Coin Analiz Et'), horizontal=True)
@@ -160,35 +166,62 @@ with st.sidebar:
     direction = st.selectbox("İşlem Yönü", ('Long', 'Short'))
     ema_period = st.number_input("EMA Değeri", min_value=1, value=84)
     scan_button = st.button("🚀 Tara", use_container_width=True)
+    st.markdown("---")
+    debug_mode = st.checkbox("🐞 Hata Ayıklama Modunu Aktif Et")
 
+
+# --- ANA İŞ AKIŞI ---
 if scan_button:
     apply_pre_filter = True
     if analysis_mode == 'Tek Coin Analiz Et':
         apply_pre_filter = False
     elif analysis_mode == 'Liste Tara' and selected_list and selected_list.startswith('takip_'):
         apply_pre_filter = False
+    
     target_coins = []
-    if analysis_mode == 'Liste Tara':
-        if selected_list == "--- TÜMÜ ---":
-            all_coins = set()
-            for file_name in get_coin_lists(): all_coins.update(line.strip().upper().replace('USDT', '/USDT') for line in open(file_name, 'r'))
-            target_coins = sorted(list(all_coins))
-        else:
-            with open(selected_list, 'r') as f: target_coins = sorted([line.strip().upper().replace('USDT', '/USDT') for line in f if line.strip()])
+    # DEBUG MODU: Aktifse, hedef listeyi ve filtreyi geçersiz kıl
+    if debug_mode:
+        target_coins = ['BTC/USDT']
+        apply_pre_filter = True
+        st.info("Hata ayıklama modu aktif. Sadece BTC/USDT, filtreli olarak test ediliyor...")
     else:
-        target_coins = [selected_coin.replace('USDT', '/USDT')]
+        if analysis_mode == 'Liste Tara':
+            if selected_list == "--- TÜMÜ ---":
+                all_coins = set()
+                for file_name in get_coin_lists(): all_coins.update(line.strip().upper().replace('USDT', '/USDT') for line in open(file_name, 'r'))
+                target_coins = sorted(list(all_coins))
+            else:
+                with open(selected_list, 'r') as f: target_coins = sorted([line.strip().upper().replace('USDT', '/USDT') for line in f if line.strip()])
+        else:
+            target_coins = [selected_coin.replace('USDT', '/USDT')]
+
     if not target_coins: st.warning("Analiz edilecek coin bulunamadı.")
     else:
         results = asyncio.run(main_scanner(target_coins, ema_period, direction, apply_pre_filter))
-        if results:
-            df = pd.DataFrame(results).sort_values(by="Trend Score", ascending=False).reset_index(drop=True)
-            st.session_state['results_df'] = df
+        
+        # DEBUG MODU: Aktifse, ham sonucu ve teşhis raporunu ekrana yazdır
+        if debug_mode:
+            st.subheader("🐞 Hata Ayıklama Raporu")
+            st.warning("Bu rapor, filtrenin bulut sunucusunda tam olarak hangi değerleri gördüğünü gösterir.")
+            debug_info = results[0].get("Debug", {})
+            if debug_info:
+                st.table(pd.DataFrame([debug_info]))
+            st.json(results[0]) # Ham verinin tamamını görmek için
         else:
-            message = "Filtreli tarama sonucunda koşulları sağlayan coin bulunamadı." if apply_pre_filter else "Seçilen coin(ler) için analiz tamamlandı."
-            st.success(message)
-            if 'results_df' in st.session_state: del st.session_state['results_df']
+            final_results = [r for r in results if r is not None and "Hata" not in r and r.get("Hata") != "Ön Filtreden Geçemedi"]
+            if final_results:
+                df = pd.DataFrame(final_results)
+                if "Debug" in df.columns:
+                    df = df.drop(columns=["Debug"])
+                df = df.sort_values(by="Trend Score", ascending=False).reset_index(drop=True)
+                st.session_state['results_df'] = df
+            else:
+                message = "Filtreli tarama sonucunda koşulları sağlayan coin bulunamadı." if apply_pre_filter else "Seçilen coin(ler) için analiz tamamlandı."
+                st.success(message)
+                if 'results_df' in st.session_state: del st.session_state['results_df']
 
-if 'results_df' in st.session_state and not st.session_state.results_df.empty:
+# --- SONUÇLARI GÖSTERME VE FİLTRELEME ---
+if not debug_mode and 'results_df' in st.session_state and not st.session_state.results_df.empty:
     st.markdown("---"); st.subheader("🔍 Sonuçları Filtrele")
     col1, col2 = st.columns(2)
     with col1: filter_adx_1d = st.checkbox("Sadece 1D ADX > 25 Olanları Göster")
