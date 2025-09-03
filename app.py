@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import ccxt.pro as ccxt
+import ccxt # SENKRON VERSİYON
 import os
 from dotenv import load_dotenv
 import asyncio
@@ -9,15 +9,24 @@ from datetime import datetime
 import pytz
 import numpy as np
 
-# --- 1. YAPILANDIRMA VE BAŞLANGIÇ AYARLARI ---
+# --- 1. YAPILANDIRMA ---
 load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 st.set_page_config(page_title="EMA Trend Tarayıcı", layout="wide")
-st.title("🚀 Hızlandırılmış EMA Trend Tarayıcı (Binance Futures)")
+st.title("🐌 Basitleştirilmiş EMA Trend Tarayıcı (Test Versiyonu)")
 
 # --- 2. YARDIMCI FONKSİYONLAR ---
 
+# Bu testte önbelleği devre dışı bırakıyoruz ki veriler taze gelsin
+# @st.cache_data(ttl=600) 
+def get_ohlcv(exchange, symbol, timeframe, limit=500):
+    try:
+        return exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+    except Exception as e:
+        return []
+
+# ... Diğer yardımcı fonksiyonlar (calculate_adx, get_status_icon vs.) aynı kalabilir ...
 def get_status_icon(price, ema, direction):
     if ema is None: return "Veri Yetersiz"
     proximity = abs(price - ema) / ema
@@ -37,125 +46,14 @@ def calculate_adx(high, low, close, period=14):
     dx = (abs(plus_di - minus_di) / dx_denominator) * 100
     return dx.ewm(span=period, adjust=False).mean().iloc[-1]
 
-async def get_data_for_coin(exchange, symbol, ema_period, direction, apply_pre_filter):
-    try:
-        timeframes = ['15m', '1h', '4h', '1d']
-        # HATA DÜZELTMESİ: Veri çekme limitini artırarak "Veri Yetersiz" hatasını çözüyoruz.
-        limit = 500 
-        tasks = [exchange.fetch_ohlcv(symbol, tf, limit=limit) for tf in timeframes]
-        ohlcv_data = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        for i, result in enumerate(ohlcv_data):
-            # Gerekli EMA periyodundan daha az veri gelirse hata ver
-            if isinstance(result, Exception) or not result or len(result) < (ema_period * 2):
-                return {"Coin": symbol, "Trend Score": 0, "Hata": "Veri Yetersiz"}
-        
-        data_15m, data_1h, data_4h, data_1d = ohlcv_data
-
-        df_1h = pd.DataFrame(data_1h, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df_4h = pd.DataFrame(data_4h, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df_1d = pd.DataFrame(data_1d, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        
-        ema_1h = df_1h['close'].ewm(span=ema_period, adjust=False).mean().iloc[-1]
-        ema_4h = df_4h['close'].ewm(span=ema_period, adjust=False).mean().iloc[-1]
-        ema_1d = df_1d['close'].ewm(span=ema_period, adjust=False).mean().iloc[-1]
-        
-        price_1h = df_1h['close'].iloc[-1]
-        price_4h = df_4h['close'].iloc[-1]
-        price_1d = df_1d['close'].iloc[-1]
-
-        debug_data = {
-            "price_1h": price_1h, "ema_1h": ema_1h,
-            "1h_kontrol_sonucu": "🟢" if price_1h > ema_1h else "🔴",
-            "price_4h": price_4h, "ema_4h": ema_4h,
-            "4h_kontrol_sonucu": "🟢" if price_4h > ema_4h else "🔴"
-        }
-
-        if apply_pre_filter:
-            pre_filter_passed = False
-            if direction == 'Long':
-                if price_1h > ema_1h and price_4h > ema_4h: pre_filter_passed = True
-            else:
-                if price_1h < ema_1h and price_4h < ema_4h: pre_filter_passed = True
-            
-            debug_data["filter_passed"] = pre_filter_passed
-            if not pre_filter_passed:
-                return {"Coin": symbol, "Hata": "Ön Filtreden Geçemedi", "Debug": debug_data}
-
-        icon_direction = direction if apply_pre_filter else "Neutral"
-        
-        adx_1d = calculate_adx(df_1d['high'], df_1d['low'], df_1d['close'])
-        adx_1h = calculate_adx(df_1h['high'], df_1h['low'], df_1h['close'])
-        
-        tr_1d = pd.concat([df_1d['high'] - df_1d['low'], abs(df_1d['high'] - df_1d['close'].shift(1)), abs(df_1d['low'] - df_1d['close'].shift(1))], axis=1).max(axis=1)
-        atr_1d = tr_1d.ewm(span=14, adjust=False).mean().iloc[-1]
-        atr_percent = (atr_1d / price_1d) * 100 if price_1d > 0 else 0
-        distance_from_ema = ((price_1d - ema_1d) / ema_1d) * 100 if ema_1d > 0 else 0
-        
-        total_score = 0
-        if direction == 'Long':
-            if price_1d > ema_1d: total_score += 40
-            if price_4h > ema_4h: total_score += 30
-            if price_1h > ema_1h: total_score += 20
-            if ema_1h > ema_4h: total_score += 10
-        else:
-            if price_1d < ema_1d: total_score += 40
-            if price_4h < ema_4h: total_score += 30
-            if price_1h < ema_1h: total_score += 20
-            if ema_1h < ema_4h: total_score += 10
-        
-        df_15m = pd.DataFrame(data_15m, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        ema_15m_21 = df_15m['close'].ewm(span=21, adjust=False).mean().iloc[-1]
-        price_15m = df_15m['close'].iloc[-1]
-        
-        final_data = {
-            "Coin": symbol,
-            "15m (21 EMA)": get_status_icon(price_15m, ema_15m_21, icon_direction),
-            f"1h ({ema_period} EMA)": get_status_icon(price_1h, ema_1h, icon_direction),
-            f"4h ({ema_period} EMA)": get_status_icon(price_4h, ema_4h, icon_direction),
-            f"1d ({ema_period} EMA)": get_status_icon(price_1d, ema_1d, icon_direction),
-            "Trend Score": total_score,
-            "1H ADX (14)": f"{adx_1h:.2f}",
-            "1D ADX (14)": f"{adx_1d:.2f}",
-            "Günlük ATR %": f"{atr_percent:.2f}%",
-            "Fiyatın 1D EMA'dan Uzaklığı %": f"{distance_from_ema:.2f}%",
-            "Debug": debug_data
-        }
-        return final_data
-    except Exception as e:
-        return {"Coin": symbol, "Trend Score": 0, "Hata": str(e)[:50]}
-
-async def main_scanner(target_coins, ema_period, direction, apply_pre_filter):
-    exchange_async = ccxt.binance({'options': {'defaultType': 'future'}})
-    tasks = [get_data_for_coin(exchange_async, coin, ema_period, direction, apply_pre_filter) for coin in target_coins]
-    results = []
-    progress_bar = st.progress(0, text="Tarama başladı...")
-    for i, task in enumerate(asyncio.as_completed(tasks)):
-        result = await task
-        results.append(result)
-        progress_percentage = (i + 1) / len(tasks)
-        progress_bar.progress(progress_percentage, text=f"{i+1}/{len(tasks)} coin analiz edildi...")
-    await exchange_async.close()
-    progress_bar.empty()
-    return results
-
-def get_coin_lists(): return [f for f in os.listdir('.') if f.endswith('.txt')]
-async def send_telegram_report(html_content):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID: st.error("Telegram bilgileri .env dosyasında eksik!"); return
-    try:
-        bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
-        with open("scan_results.html", "w", encoding="utf-8") as f: f.write(html_content)
-        with open("scan_results.html", "rb") as f:
-            await bot.send_document(chat_id=TELEGRAM_CHAT_ID, document=f, filename="Tarama_Sonuclari.html", caption="EMA Trend Tarama Raporu")
-        st.success("Rapor Telegram'a başarıyla gönderildi!")
-    except Exception as e: st.error(f"Telegram'a gönderirken hata oluştu: {e}")
-    finally:
-        if os.path.exists("scan_results.html"): os.remove("scan_results.html")
-
+# --- ARAYÜZ (STREAMLIT UI) ---
+# ... (Arayüz kodunda değişiklik yok) ...
 with st.sidebar:
     st.header("⚙️ Tarama Ayarları")
     analysis_mode = st.radio("Analiz Modu", ('Liste Tara', 'Tek Coin Analiz Et'), horizontal=True)
+    # ... (geri kalanı aynı)
     selected_list, selected_coin = None, None
+    def get_coin_lists(): return [f for f in os.listdir('.') if f.endswith('.txt')]
     if analysis_mode == 'Liste Tara':
         available_lists, list_options = get_coin_lists(), ["--- TÜMÜ ---"] + get_coin_lists()
         selected_list = st.selectbox("Liste Seç", options=list_options)
@@ -167,73 +65,75 @@ with st.sidebar:
     direction = st.selectbox("İşlem Yönü", ('Long', 'Short'))
     ema_period = st.number_input("EMA Değeri", min_value=1, value=84)
     scan_button = st.button("🚀 Tara", use_container_width=True)
-    st.markdown("---")
-    debug_mode = st.checkbox("🐞 Hata Ayıklama Modunu Aktif Et")
 
+# --- ANA İŞ AKIŞI (SENKRON VERSİYON) ---
 if scan_button:
+    exchange = ccxt.binance({'options': {'defaultType': 'future'}})
     apply_pre_filter = True
-    if analysis_mode == 'Tek Coin Analiz Et':
+    if analysis_mode == 'Tek Coin Analiz Et' or (analysis_mode == 'Liste Tara' and selected_list and selected_list.startswith('takip_')):
         apply_pre_filter = False
-    elif analysis_mode == 'Liste Tara' and selected_list and selected_list.startswith('takip_'):
-        apply_pre_filter = False
-    
+
     target_coins = []
-    if debug_mode:
-        target_coins = ['BTC/USDT']
-        apply_pre_filter = True
-        st.info("Hata ayıklama modu aktif. Sadece BTC/USDT, filtreli olarak test ediliyor...")
-    else:
-        if analysis_mode == 'Liste Tara':
-            if selected_list == "--- TÜMÜ ---":
-                all_coins = set()
-                for file_name in get_coin_lists(): all_coins.update(line.strip().upper().replace('USDT', '/USDT') for line in open(file_name, 'r'))
-                target_coins = sorted(list(all_coins))
-            else:
-                with open(selected_list, 'r') as f: target_coins = sorted([line.strip().upper().replace('USDT', '/USDT') for line in f if line.strip()])
+    # ... (Hedef coin listesini oluşturma mantığı aynı) ...
+    if analysis_mode == 'Liste Tara':
+        if selected_list == "--- TÜMÜ ---":
+            all_coins = set()
+            for file_name in get_coin_lists(): all_coins.update(line.strip().upper().replace('USDT', '/USDT') for line in open(file_name, 'r'))
+            target_coins = sorted(list(all_coins))
         else:
-            target_coins = [selected_coin.replace('USDT', '/USDT')]
-
-    if not target_coins: st.warning("Analiz edilecek coin bulunamadı.")
+            with open(selected_list, 'r') as f: target_coins = sorted([line.strip().upper().replace('USDT', '/USDT') for line in f if line.strip()])
     else:
-        results = asyncio.run(main_scanner(target_coins, ema_period, direction, apply_pre_filter))
+        target_coins = [selected_coin.replace('USDT', '/USDT')]
+
+    if not target_coins:
+        st.warning("Analiz edilecek coin bulunamadı.")
+    else:
+        results = []
+        progress_bar = st.progress(0, text="Tarama başladı...")
         
-        if debug_mode:
-            st.subheader("🐞 Hata Ayıklama Raporu")
-            st.warning("Bu rapor, filtrenin bulut sunucusunda tam olarak hangi değerleri gördüğünü gösterir.")
-            debug_info = results[0].get("Debug")
-            if not debug_info:
-                 st.json(results[0])
-            else:
-                st.table(pd.DataFrame([debug_info]))
-                st.json(results[0])
-        else:
-            final_results = [r for r in results if r is not None and "Hata" not in r and r.get("Hata") != "Ön Filtreden Geçemedi"]
-            if final_results:
-                df = pd.DataFrame(final_results)
-                if "Debug" in df.columns:
-                    df = df.drop(columns=["Debug"])
-                df = df.sort_values(by="Trend Score", ascending=False).reset_index(drop=True)
-                st.session_state['results_df'] = df
-            else:
-                message = "Filtreli tarama sonucunda koşulları sağlayan coin bulunamadı." if apply_pre_filter else "Seçilen coin(ler) için analiz tamamlandı."
-                st.success(message)
-                if 'results_df' in st.session_state: del st.session_state['results_df']
+        for i, coin in enumerate(target_coins):
+            try:
+                # Her coin için sırayla veri çek ve analiz et
+                data_1h = get_ohlcv(exchange, coin, '1h')
+                data_4h = get_ohlcv(exchange, coin, '4h')
+                if not data_1h or not data_4h or len(data_1h) < ema_period or len(data_4h) < ema_period:
+                    continue # Yeterli veri yoksa bu coini atla
 
-if not debug_mode and 'results_df' in st.session_state and not st.session_state.results_df.empty:
-    st.markdown("---"); st.subheader("🔍 Sonuçları Filtrele")
-    col1, col2 = st.columns(2)
-    with col1: filter_adx_1d = st.checkbox("Sadece 1D ADX > 25 Olanları Göster")
-    with col2: filter_adx_1h = st.checkbox("Sadece 1H ADX > 25 Olanları Göster")
-    filtered_df = st.session_state['results_df'].copy()
-    if '1D ADX (14)' in filtered_df.columns: filtered_df['1D ADX (14)'] = pd.to_numeric(filtered_df['1D ADX (14)'], errors='coerce')
-    if '1H ADX (14)' in filtered_df.columns: filtered_df['1H ADX (14)'] = pd.to_numeric(filtered_df['1H ADX (14)'], errors='coerce')
-    if filter_adx_1d and '1D ADX (14)' in filtered_df.columns: filtered_df = filtered_df[filtered_df['1D ADX (14)'] > 25]
-    if filter_adx_1h and '1H ADX (14)' in filtered_df.columns: filtered_df = filtered_df[filtered_df['1H ADX (14)'] > 25]
-    st.dataframe(filtered_df, use_container_width=True)
-    if st.button("Filtrelenmiş Sonuçları Telegram'a Gönder"):
-        turkey_tz, now = pytz.timezone("Europe/Istanbul"), datetime.now(pytz.timezone("Europe/Istanbul"))
-        timestamp_str = now.strftime("%d/%m/%Y --- %H:%M (GMT+3)")
-        html_header = f"""<html><head><style>body {{ font-family: sans-serif; }} table {{ border-collapse: collapse; width: 100%; }} th, td {{ border: 1px solid #dddddd; text-align: center; padding: 8px; }} th {{ background-color: #f2f2f2; }} h3, p {{ text-align: center; }}</style></head><body><h3>EMA Trend Tarama Raporu</h3><p><b>Tarama Zamanı:</b> {timestamp_str}</p>"""
-        html_footer, results_html = "</body></html>", filtered_df.to_html(index=False, justify='center', border=1)
-        full_html = html_header + results_html + html_footer
-        asyncio.run(send_telegram_report(full_html))
+                df_1h = pd.DataFrame(data_1h, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                df_4h = pd.DataFrame(data_4h, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                ema_1h = df_1h['close'].ewm(span=ema_period, adjust=False).mean().iloc[-1]
+                ema_4h = df_4h['close'].ewm(span=ema_period, adjust=False).mean().iloc[-1]
+                price_1h = df_1h['close'].iloc[-1]
+                price_4h = df_4h['close'].iloc[-1]
+                
+                pre_filter_passed = False
+                if direction == 'Long' and price_1h > ema_1h and price_4h > ema_4h: pre_filter_passed = True
+                if direction == 'Short' and price_1h < ema_1h and price_4h < ema_4h: pre_filter_passed = True
+
+                if apply_pre_filter and not pre_filter_passed:
+                    continue
+
+                # Filtreden geçtiyse veya filtre kapalıysa, detaylı analize devam et
+                data_1d = get_ohlcv(exchange, coin, '1d')
+                data_15m = get_ohlcv(exchange, coin, '15m')
+                # ... (Burada tam analiz devam ediyor, önceki koddan kopyalanabilir)
+                # Bu kısmı sadeleştirmek adına şimdilik sadece temel bilgileri ekliyorum:
+                results.append({"Coin": coin, "1h Fiyat": price_1h, "1h EMA": ema_1h, "4h Fiyat": price_4h, "4h EMA": ema_4h})
+
+            except Exception as e:
+                st.write(f"{coin} için hata: {e}") # Hata olursa ekrana yaz
+            
+            progress_bar.progress((i + 1) / len(target_coins), text=f"Analiz ediliyor: {coin}")
+        
+        progress_bar.empty()
+        
+        if results:
+            df = pd.DataFrame(results)
+            st.session_state['results_df'] = df
+        else:
+            st.success("Koşulları sağlayan coin bulunamadı.")
+            if 'results_df' in st.session_state: del st.session_state['results_df']
+
+if 'results_df' in st.session_state and not st.session_state.results_df.empty:
+    st.dataframe(st.session_state.results_df, use_container_width=True)
+    # Telegram butonu şimdilik devre dışı bırakıldı
